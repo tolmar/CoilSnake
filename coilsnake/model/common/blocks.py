@@ -38,7 +38,7 @@ class Block(object):
         return self
 
     def __exit__(self, type, value, traceback):
-        del self.data
+        pass
 
     def reset(self, size=0):
         self.data = array.array('B', [0] * size)
