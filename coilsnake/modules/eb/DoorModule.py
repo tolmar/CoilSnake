@@ -81,6 +81,8 @@ class DoorModule(EbModule):
                             d = door_from_yml_rep(door)
                             entry.append(d)
                         self.door_areas.append(entry)
+        # TODO: don't do this once you handle door expansion
+        del self.door_areas[1280:]
 
     def write_to_rom(self, rom):
         # Deallocate the range of the ROM in which we will write the door destinations.

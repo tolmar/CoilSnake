@@ -1,13 +1,71 @@
 import yaml
+import logging
 
+from coilsnake.model.common.blocks import Block
 from coilsnake.model.common.table import EnumeratedLittleEndianIntegerTableEntry, LittleEndianIntegerTableEntry, \
     RowTableEntry
 from coilsnake.model.eb.table import eb_table_from_offset
 from coilsnake.modules.eb.EbModule import EbModule
 from coilsnake.util.common.yml import replace_field_in_yml, yml_load
-from coilsnake.util.eb.pointer import from_snes_address
+from coilsnake.util.eb.pointer import to_snes_address, from_snes_address, AsmPointerReference, XlPointerReference, BankByteReference, ShortPointerReference
 
-MAP_POINTERS_OFFSET = 0xa1db
+log = logging.getLogger(__name__)
+
+# Size of a map chunk in bytes
+MAP_CHUNK_SIZE = 10240
+# Size of map chunk in tile rows
+MAP_CHUNK_HEIGHT = 40
+# Code references to the main map chunk pointers table
+MAP_POINTERS_REFERENCES = [
+    XlPointerReference(from_snes_address(0xC0A1DA)),
+    XlPointerReference(from_snes_address(0xC0A1E0), 2)
+]
+# Code references to the last two map chunks (used for high bits of tiles).
+# Despite being in the pointers table, these are never actually read from the
+# pointers table. The game also assumes these are in the same bank as eachother;
+# for convenience sake I'm just making them contiguous.
+TAIL_CHUNKS_REFERENCES = [
+    BankByteReference(from_snes_address(0xC0A18E)),
+    ShortPointerReference(from_snes_address(0xC0A193))
+]
+# Need to keep an eye on this one separately, since it's the second tail chunk
+TAIL_CHUNK_2_REFERENCES = [
+    ShortPointerReference(from_snes_address(0xC0A19D))
+]
+# Shorts referring to map bounds checks
+MAP_SIZE_BOUNDS_CHECKS = [
+    from_snes_address(0xC00B41 + 1),
+    from_snes_address(0xC00C8D + 1),
+]
+
+SECTOR_TILESETS_PALETTES_REFERENCES = [
+    XlPointerReference(from_snes_address(0xC008F7)),
+    XlPointerReference(from_snes_address(0xC00B24)),
+    XlPointerReference(from_snes_address(0xC00B6F)),
+    XlPointerReference(from_snes_address(0xC00C35)),
+    XlPointerReference(from_snes_address(0xC00C7F)),
+    XlPointerReference(from_snes_address(0xC02303)),
+    XlPointerReference(from_snes_address(0xC02777)),
+    XlPointerReference(from_snes_address(0xC4DFF5)),
+    AsmPointerReference(from_snes_address(0xC4E163))
+]
+
+SECTOR_MUSIC_TABLE_REFERENCES = [
+    XlPointerReference(from_snes_address(0xC06921)),
+    XlPointerReference(from_snes_address(0xEFDDB8))
+]
+
+MAP_MISC_TABLE_REFERENCES = [
+    XlPointerReference(from_snes_address(0xC00ABC)),
+    XlPointerReference(from_snes_address(0xC026CD))
+]
+
+TOWN_MAP_TABLE_REFERENCES = [
+    XlPointerReference(from_snes_address(0xC4D29F)),
+    AsmPointerReference(from_snes_address(0xC4D30C))
+]
+
+# Weirdly labeled reference to tail chunk data
 LOCAL_TILESETS_OFFSET = 0x175000
 MAP_HEIGHT = 320
 MAP_WIDTH = 256
@@ -58,6 +116,20 @@ SectorYmlTable = RowTableEntry.from_schema(
 
 class MapModule(EbModule):
     NAME = "Map"
+    FREE_RANGES = [
+        # Tile chunk data
+        (from_snes_address(0xD60000), from_snes_address(0xD7A800 - 1)),
+        # Tile chunk pointer table
+        (from_snes_address(0xC42F64), from_snes_address(0xC42F64 + 39)),
+        # Sector tilesets and palettes data
+        (from_snes_address(0xD7A800), from_snes_address(0xD7A800 + 2559)),
+        # Sector music
+        (from_snes_address(0xDCD637), from_snes_address(0xDCD637 + 2559)),
+        # Sector misc
+        (from_snes_address(0xD7B200), from_snes_address(0xD7B200 + 2559)),
+        # Sector town map
+        (from_snes_address(0xEFA70F), from_snes_address(0xEFA70F + 2559))
+    ]
 
     def __init__(self):
         super(MapModule, self).__init__()
@@ -77,7 +149,7 @@ class MapModule(EbModule):
 
     def read_from_rom(self, rom):
         # Read map data
-        map_ptrs_addr = from_snes_address(rom.read_multi(MAP_POINTERS_OFFSET, 3))
+        map_ptrs_addr = from_snes_address(MAP_POINTERS_REFERENCES[0].read(rom))
         map_addrs = [from_snes_address(rom.read_multi(map_ptrs_addr + x * 4, 4)) for x in range(8)]
 
         def read_row_data(row_number):
@@ -105,33 +177,67 @@ class MapModule(EbModule):
         self.sector_town_map_table.from_block(rom, from_snes_address(SECTOR_TOWN_MAP_TABLE_OFFSET))
 
     def write_to_rom(self, rom):
-        # Write map data
-        map_ptrs_addr = from_snes_address(rom.read_multi(MAP_POINTERS_OFFSET, 3))
-        map_addrs = [from_snes_address(rom.read_multi(map_ptrs_addr + x * 4, 4)) for x in range(8)]
-
-        for i in range(MAP_HEIGHT):
-            offset = map_addrs[i % 8] + ((i >> 3) << 8)
-            rom[offset:offset + MAP_WIDTH] = [x & 0xff for x in self.tiles[i]]
-        k = LOCAL_TILESETS_OFFSET
-        for i in range(MAP_HEIGHT >> 3):
+        # Write tile data to the blocks
+        map_height = len(self.tiles)
+        chunk_size = 256 * int(map_height / 8)
+        log.debug("Tile chunk size #{}".format(chunk_size))
+        tile_blocks = [Block(chunk_size) for i in range(8)]
+        for i in range(map_height):
+            chunk = i % 8
+            offset = ((i >> 3) << 8)
+            tile_blocks[chunk][offset:offset + MAP_WIDTH] = [x & 0xff for x in self.tiles[i]]
+        # Write data to the tail blocks
+        tail_block = Block(chunk_size * 2)
+        k = 0
+        for i in range(map_height >> 3):
             for j in range(MAP_WIDTH):
                 c = ((self.tiles[i << 3][j] >> 8)
                      | ((self.tiles[(i << 3) | 1][j] >> 8) << 2)
                      | ((self.tiles[(i << 3) | 2][j] >> 8) << 4)
                      | ((self.tiles[(i << 3) | 3][j] >> 8) << 6))
-                rom[k] = c
+                tail_block[k] = c
                 c = ((self.tiles[(i << 3) | 4][j] >> 8)
                      | ((self.tiles[(i << 3) | 5][j] >> 8) << 2)
                      | ((self.tiles[(i << 3) | 6][j] >> 8) << 4)
                      | ((self.tiles[(i << 3) | 7][j] >> 8) << 6))
-                rom[k + 0x3000] = c
+                # Interestingly, vanilla used 0x200 more than it needed here
+                tail_block[k + chunk_size] = c
                 k += 1
+        # Allocate the blocks
+        tile_block_addrs = [rom.allocate(data=tile_blocks[i]) for i in range(8)]
+        tail_block_addr = rom.allocate(data=tail_block)
+        # Write the pointer table
+        map_pointers = Block(4 * 8)
+        for i in range(8):
+            log.debug("Tile block addr @ " + hex(to_snes_address(tile_block_addrs[i])))
+            map_pointers.write_multi(i * 4, to_snes_address(tile_block_addrs[i]), 4)
+        log.debug("Tail block addr @ " + hex(to_snes_address(tail_block_addr)))
+        # Allocate the pointer table
+        map_pointers_addr = rom.allocate(data=map_pointers)
+        log.debug("Map pointers addr @ " + hex(to_snes_address(map_pointers_addr)))
+        # Update references to the data
+        for pointer in MAP_POINTERS_REFERENCES:
+            pointer.write(rom, to_snes_address(map_pointers_addr))
+        for pointer in TAIL_CHUNKS_REFERENCES:
+            pointer.write(rom, to_snes_address(tail_block_addr))
+        for pointer in TAIL_CHUNK_2_REFERENCES:
+            pointer.write(rom, to_snes_address(tail_block_addr + chunk_size))
+
+        # Update this bounds check to whatever the new map size is
+        for pointer in MAP_SIZE_BOUNDS_CHECKS:
+            rom.write_multi(pointer, map_height, 2)
 
         # Write sector data
-        self.sector_tilesets_palettes_table.to_block(rom, from_snes_address(SECTOR_TILESETS_PALETTES_TABLE_OFFSET))
-        self.sector_music_table.to_block(rom, from_snes_address(SECTOR_MUSIC_TABLE_OFFSET))
-        self.sector_misc_table.to_block(rom, from_snes_address(SECTOR_MISC_TABLE_OFFSET))
-        self.sector_town_map_table.to_block(rom, from_snes_address(SECTOR_TOWN_MAP_TABLE_OFFSET))
+        self._write_sector_table(rom, self.sector_tilesets_palettes_table, SECTOR_TILESETS_PALETTES_REFERENCES)
+        self._write_sector_table(rom, self.sector_music_table, SECTOR_MUSIC_TABLE_REFERENCES)
+        self._write_sector_table(rom, self.sector_misc_table, MAP_MISC_TABLE_REFERENCES)
+        self._write_sector_table(rom, self.sector_town_map_table, TOWN_MAP_TABLE_REFERENCES)
+
+    def _write_sector_table(self, rom, table, references):
+        new_pointer = rom.allocate(size=table.size)
+        table.to_block(rom, new_pointer)
+        for pointer in references:
+            pointer.write(rom, to_snes_address(new_pointer))
 
     def write_to_project(self, resource_open):
         # Write map tiles
@@ -177,9 +283,21 @@ class MapModule(EbModule):
         with resource_open("map_tiles", "map", True) as f:
             self.tiles = [[int(x, 16) for x in y.split(" ")] for y in f.readlines()]
 
-        # Read sector data
+        # Open the sectors file first and see how expanded it is
         with resource_open("map_sectors", "yml", True) as f:
-            self.sector_yml_table.from_yml_file(f)
+            # TODO: this invocation (copied from ExpandedTablesModule) is weird.
+            # A helper method would help, but I think that too is just a bandaid
+            # on how strange it is that from_yml_file has a mystery max-length
+            # setting it pulls out of in eb.yml
+            yml_rep = yml_load(f)
+            num_rows = len(yml_rep)
+            self.sector_yml_table.recreate(num_rows=num_rows)
+            self.sector_yml_table.from_yml_rep(yml_rep)
+            # TODO: okay yeah this is scuffed; I have to resize them all
+            self.sector_tilesets_palettes_table.recreate(num_rows = num_rows)
+            self.sector_music_table.recreate(num_rows = num_rows)
+            self.sector_misc_table.recreate(num_rows = num_rows)
+            self.sector_town_map_table.recreate(num_rows = num_rows)
 
         for i in range(self.sector_yml_table.num_rows):
             tileset = self.sector_yml_table[i][0]
