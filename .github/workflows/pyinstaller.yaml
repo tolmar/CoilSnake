@@ -1,0 +1,32 @@
+name: Build CoilSnake with Win32 Py3.8
+
+on:
+  push: # by vote, we'll only build on pushes to master
+    branches: [ master ]
+  pull_request: # build on pull request against any branch
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # setuptools-scm uses tags and commit counts to set the version
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.8'
+        cache: 'pip' # caching pip dependencies
+        architecture: 'x86'
+    - name: Build CoilSnake
+      run: pip install .
+    - name: Install PyInstaller
+      run: pip install pyinstaller
+    - name: Build .exe
+      run: python setup_exe.py
+    - name: Rename .exe
+      run: python rename_exe_with_version.py
+    - name: Upload .exe
+      uses: actions/upload-artifact@v4
+      with:
+        name: CoilSnake (Py3.8-win32)
+        path: dist/CoilSnake*.exe

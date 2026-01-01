@@ -1,5 +1,6 @@
 /.idea
 /build
+/coilsnake_venv
 /dist
 /*.egg-info
 /.coverage
@@ -14,3 +15,4 @@
 /coilsnake/assets/ccc/ccc
 /coilsnake/assets/ccc/lib/*.ccs
 .DS_store
+git_commit.py

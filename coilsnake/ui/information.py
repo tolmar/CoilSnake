@@ -1,6 +1,9 @@
+from importlib.metadata import version
+
 from coilsnake.util.common import project
 
-VERSION = project.VERSION_NAMES[project.FORMAT_VERSION]
+VERSION = version('coilsnake')
+PROJECT_VERSION = project.VERSION_NAMES[project.FORMAT_VERSION]
 RELEASE_DATE = "March 19, 2023"
 
 WEBSITE = "http://pk-hack.github.io/CoilSnake"
@@ -9,6 +12,7 @@ ADDITIONAL_CREDITS = """- Some portions based on JHack, created by AnyoneEB
 - Contributions by H.S, Michael1, John Soklaski,
   João Silva, ShadowOne333, stochaztic, Catador,
   cooprocks123e, and many others"""
+# TODO: add the actual code dependencies here
 DEPENDENCIES = [
     {"name": "CoilSnake logo and icon",
      "author": "Rydel"},
@@ -28,15 +32,16 @@ DEPENDENCIES = [
      "url": "https://github.com/devinacker/exhal"},
     {"name": "EB++",
      "author": "Rufus",
-     "url": "http://goo.gl/BnNqUM"}
+     "url": "http://goo.gl/BnNqUM"},
 ]
 
 
 def coilsnake_about():
-    description = """CoilSnake {version} - {website}
-Created by {author}
-Released on {release_date}
-""".format(version=VERSION, author=AUTHOR, release_date=RELEASE_DATE, website=WEBSITE)
+    description = f"""CoilSnake {VERSION} - {WEBSITE}
+Compatible with projects created by Coilsnake version {PROJECT_VERSION}
+Created by {AUTHOR}
+Released on {RELEASE_DATE}
+"""
 
     for dependency in DEPENDENCIES:
         description += "\n- " + dependency["name"]
